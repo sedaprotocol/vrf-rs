@@ -1,9 +1,4 @@
-use p256::{
-    elliptic_curve::sec1::{FromEncodedPoint, ToEncodedPoint},
-    AffinePoint,
-    EncodedPoint,
-    ProjectivePoint,
-};
+use p256::{elliptic_curve::sec1::FromEncodedPoint, AffinePoint, EncodedPoint, ProjectivePoint};
 use primeorder::elliptic_curve::group::cofactor::CofactorGroup;
 use sha2::{Digest, Sha256};
 
@@ -86,16 +81,15 @@ fn try_hash_to_point(data: &[u8]) -> Result<AffinePoint> {
     v.extend(data);
 
     let encoded_point = EncodedPoint::from_bytes(&v).map_err(|e| VrfError::EncodedPoint(e.to_string()))?;
-    let point = Option::from(AffinePoint::from_encoded_point(&encoded_point))
-        .ok_or(VrfError::AffinePoint("invalid encoded point".to_string()));
-
-    point
+    Option::from(AffinePoint::from_encoded_point(&encoded_point))
+        .ok_or(VrfError::AffinePoint("invalid encoded point".to_string()))
 }
 
 /// Test vectors extracted from Appendix B.1 of [RFC9381](https://datatracker.ietf.org/doc/rfc9381/).
 #[cfg(test)]
 mod test {
     use hex_literal::hex;
+    use primeorder::elliptic_curve::sec1::ToEncodedPoint;
 
     use super::*;
     /// Test vector for `P256-SHA256-TAI` ciphersuite.
