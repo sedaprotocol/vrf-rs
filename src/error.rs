@@ -14,6 +14,8 @@ pub enum VrfError {
     AffinePoint(String),
     #[error("Invalid Proof while verifying")]
     InvalidProof,
+    #[error("Invalid proof length")]
+    InvalidPiLength,
     // TweakOutOfRange,
     // InvalidAffine,
 }
