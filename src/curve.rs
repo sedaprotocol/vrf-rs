@@ -172,6 +172,57 @@ where
         Ok(primitive.into())
     }
 
+    fn prove(&self, secret_key: &[u8], alpha: &[u8]) -> Result<Vec<u8>> {
+        // Step 1: derive public key from secret key as `Y = x * B`
+        //TODO: validate secret key length?
+        let secret_key_scalar = self.scalar_from_bytes(secret_key)?;
+        let public_key_point = <Self::Curve as CurveArithmetic>::ProjectivePoint::mul_by_generator(&secret_key_scalar);
+
+        let public_key_bytes: Vec<u8> = public_key_point.to_encoded_point(true).to_bytes().to_vec();
+
+        // Step 2: Hash to curve
+        let h_point = ProjectivePoint::<Self::Curve>::from(self.encode_to_curve_tai(&public_key_bytes, alpha)?);
+        let h_point_bytes = h_point.to_encoded_point(true).to_bytes().to_vec();
+
+        // Step 3: point to string (or bytes)
+        let h_bytes = h_point.to_encoded_point(true).to_bytes().to_vec();
+
+        // Step 4: Gamma = x * H
+        let gamma_point = h_point.mul(secret_key_scalar);
+        let gamma_point_bytes = gamma_point.to_encoded_point(true).to_bytes().to_vec();
+
+        // Step 5: nonce (k generation)
+        let k_scalar = self.generate_nonce(secret_key, &Self::Hasher::digest(h_bytes))?;
+
+        // Step 6: c = ECVRF_challenge_generation (Y, H, Gamma, U, V)
+        // U = k*B = k&Generator
+        let u_point = <Self::Curve as CurveArithmetic>::ProjectivePoint::mul_by_generator(&k_scalar);
+        let u_point_bytes = u_point.to_encoded_point(true).to_bytes().to_vec();
+        // V = k*H
+        let v_point = h_point * k_scalar;
+        let v_point_bytes = v_point.to_encoded_point(true).to_bytes().to_vec();
+        // Challenge generation (returns hash output truncated by `cLen`)
+        let c_scalar_bytes = self.challenge_generation(&[
+            &public_key_bytes,
+            &h_point_bytes,
+            &gamma_point_bytes,
+            &u_point_bytes,
+            &v_point_bytes,
+        ])?;
+        let mut c_padded_bytes: Vec<u8> = vec![0; <Self::Curve as Curve>::FieldBytesSize::USIZE - Self::C_LEN];
+        c_padded_bytes.extend_from_slice(&c_scalar_bytes);
+        let c_scalar = self.scalar_from_bytes(&c_padded_bytes)?;
+
+        // Step 7: s = (k + c*x) mod q
+        let s_scalar = k_scalar + c_scalar * secret_key_scalar;
+        let s_scalar_bytes = Into::<ScalarPrimitive<Self::Curve>>::into(s_scalar).to_bytes();
+
+        // Step 8: encode (gamma, c, s)
+        let proof = [&gamma_point_bytes[..], &c_scalar_bytes, &s_scalar_bytes].concat();
+
+        Ok(proof)
+    }
+
     // ECVRF_nonce_generation_RFC6979(SK, h_string)
     fn generate_nonce(&self, secret_key: &[u8], digest_msg: &[u8]) -> Result<Scalar<Self::Curve>> {
         let k = rfc6979::generate_k::<Self::Hasher, <Self::Curve as Curve>::FieldBytesSize>(
@@ -286,6 +337,19 @@ mod test {
         assert_eq!(k.to_bytes().as_slice(), &expected_k);
     }
 
+    /// Source: Example 10
+    #[test]
+    fn test_prove_p256_sha256_tai_1() {
+        let vrf = P256Sha256;
+        let secret_key = hex!("c9afa9d845ba75166b5c215767b1d6934e50c3db36e89b127b8a622b120f6721");
+        let alpha = b"sample";
+        let pi = vrf.prove(&secret_key, alpha).unwrap();
+
+        let expected_pi = hex!(
+            "035b5c726e8c0e2c488a107c600578ee75cb702343c153cb1eb8dec77f4b5071b4a53f0a46f018bc2c56e58d383f2305e0975972c26feea0eb122fe7893c15af376b33edf7de17c6ea056d4d82de6bc02f"
+        ).to_vec();
+        assert_eq!(pi, expected_pi);
+    }
 
     // #[test]
     // fn playground() {
