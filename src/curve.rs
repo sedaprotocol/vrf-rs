@@ -1,11 +1,20 @@
+use std::ops::Mul;
+
 use elliptic_curve::{
     generic_array::typenum::Unsigned,
-    sec1::{FromEncodedPoint, ModulusSize},
+    ops::MulByGenerator,
+    sec1::{EncodedPoint, FromEncodedPoint, ModulusSize, ToEncodedPoint},
     Curve,
     CurveArithmetic,
+    FieldBytesEncoding,
+    ProjectivePoint,
+    Scalar,
     ScalarPrimitive,
 };
-use sha2::Digest;
+use sha2::{
+    digest::{crypto_common::BlockSizeUser, FixedOutput, FixedOutputReset},
+    Digest,
+};
 
 use crate::error::{Result, VrfError};
 
@@ -14,9 +23,13 @@ where
     Self::Curve: CurveArithmetic,
     <Self::Curve as Curve>::FieldBytesSize: ModulusSize,
     <Self::Curve as CurveArithmetic>::AffinePoint: FromEncodedPoint<Self::Curve>,
+    <Self::Curve as CurveArithmetic>::ProjectivePoint: ToEncodedPoint<Self::Curve>,
 {
     type Curve;
-    type Hasher: Digest;
+    type Hasher: Digest
+        + BlockSizeUser
+        + FixedOutput<OutputSize = <Self::Curve as Curve>::FieldBytesSize>
+        + FixedOutputReset;
 
     // cipher suite id
     const SUITE_ID: u8;
@@ -31,7 +44,7 @@ where
         &self,
         encode_to_curve_salt: &[u8],
         alpha: &[u8],
-    ) -> Result<<Self::Curve as elliptic_curve::CurveArithmetic>::AffinePoint> {
+    ) -> Result<<Self::Curve as CurveArithmetic>::AffinePoint> {
         // Step 1:  ctr = 0
         let mut ctr_range = 0..255;
 
@@ -89,7 +102,7 @@ where
             // 3. For PJ in [P1, P2, P3, P4, P5]: str = str || point_to_string(PJ)
             .try_fold(
                 vec![suite_string, CHALLENGE_GENERATION_DOMAIN_SEPARATOR_FRONT],
-                |mut acc, point| {
+                |mut acc, &point| {
                     // The point_to_string function converts a point on E to an octet string with point compression on.
                     // This implies that ptLen = fLen + 1 = 33.
                     acc.extend(point.to_vec());
@@ -122,9 +135,9 @@ where
         &self,
         pi: &[u8],
     ) -> Result<(
-        <Self::Curve as elliptic_curve::CurveArithmetic>::AffinePoint,
-        <Self::Curve as elliptic_curve::CurveArithmetic>::Scalar,
-        <Self::Curve as elliptic_curve::CurveArithmetic>::Scalar,
+        <Self::Curve as CurveArithmetic>::AffinePoint,
+        <Self::Curve as CurveArithmetic>::Scalar,
+        <Self::Curve as CurveArithmetic>::Scalar,
     )> {
         // Expected size of proof: len(pi) = len(gamma) + len(c) + len(s)
         // len(s) = 2 * len(c), so len(pi) = len(gamma) + 3 * len(c)
@@ -136,7 +149,7 @@ where
         // Gamma point
         let gamma = self.point_from_bytes(&pi[0..gamma_oct])?;
         // C scalar (needs to be padded with leading zeroes)
-        let mut c_bytes: Vec<u8> = vec![0; <Self::Curve as elliptic_curve::Curve>::FieldBytesSize::USIZE - Self::C_LEN];
+        let mut c_bytes: Vec<u8> = vec![0; <Self::Curve as Curve>::FieldBytesSize::USIZE - Self::C_LEN];
         c_bytes.extend_from_slice(&pi[gamma_oct..gamma_oct + Self::C_LEN]);
         let c_scalar = self.scalar_from_bytes(&c_bytes)?;
         // S scalar
@@ -145,24 +158,25 @@ where
         Ok((gamma, c_scalar, s_scalar))
     }
 
-    fn try_hash_to_point(&self, data: &[u8]) -> Result<<Self::Curve as elliptic_curve::CurveArithmetic>::AffinePoint> {
+    fn try_hash_to_point(&self, data: &[u8]) -> Result<<Self::Curve as CurveArithmetic>::AffinePoint> {
         let mut point_bytes = vec![0x02];
         point_bytes.extend(data);
 
         self.point_from_bytes(&point_bytes)
     }
 
-    fn point_from_bytes(&self, data: &[u8]) -> Result<<Self::Curve as elliptic_curve::CurveArithmetic>::AffinePoint> {
-        let encoded_point: elliptic_curve::sec1::EncodedPoint<Self::Curve> =
-            elliptic_curve::sec1::EncodedPoint::<Self::Curve>::from_bytes(data)
-                .map_err(|e| VrfError::EncodedPoint(e.to_string()))?;
+    fn point_from_bytes(&self, data: &[u8]) -> Result<<Self::Curve as CurveArithmetic>::AffinePoint> {
+        let encoded_point: EncodedPoint<Self::Curve> =
+            EncodedPoint::<Self::Curve>::from_bytes(data).map_err(|e| VrfError::EncodedPoint(e.to_string()))?;
 
-        Option::from(<Self::Curve as elliptic_curve::CurveArithmetic>::AffinePoint::from_encoded_point(&encoded_point))
+        Option::from(<Self::Curve as CurveArithmetic>::AffinePoint::from_encoded_point(
+            &encoded_point,
+        ))
             .ok_or(VrfError::AffinePoint("invalid encoded point".to_string()))
     }
 
-    fn scalar_from_bytes(&self, data: &[u8]) -> Result<elliptic_curve::scalar::Scalar<Self::Curve>> {
-        let primitive: elliptic_curve::scalar::ScalarPrimitive<Self::Curve> = ScalarPrimitive::from_slice(data)?;
+    fn scalar_from_bytes(&self, data: &[u8]) -> Result<Scalar<Self::Curve>> {
+        let primitive = ScalarPrimitive::<Self::Curve>::from_slice(data)?;
 
         Ok(primitive.into())
     }
@@ -176,7 +190,7 @@ impl EcVrf for P256Sha256 {
 
     const C_LEN: usize = Self::Q_LEN / 2;
     const PT_LEN: usize = <Self::Curve as Curve>::Uint::MAX.bits() / 8;
-    const Q_LEN: usize = <Self::Curve as elliptic_curve::Curve>::ORDER.bits() / 8;
+    const Q_LEN: usize = <Self::Curve as Curve>::ORDER.bits() / 8;
     const SUITE_ID: u8 = 0x01;
 }
 
@@ -188,7 +202,7 @@ impl EcVrf for Secp256k1Sha256 {
 
     const C_LEN: usize = Self::Q_LEN / 2;
     const PT_LEN: usize = <Self::Curve as Curve>::Uint::MAX.bits() / 8;
-    const Q_LEN: usize = <Self::Curve as elliptic_curve::Curve>::ORDER.bits() / 8;
+    const Q_LEN: usize = <Self::Curve as Curve>::ORDER.bits() / 8;
     const SUITE_ID: u8 = 0xFE;
 }
 
