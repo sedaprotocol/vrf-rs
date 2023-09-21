@@ -2,6 +2,7 @@ use std::ops::Mul;
 
 use elliptic_curve::{
     generic_array::typenum::Unsigned,
+    group::cofactor::CofactorGroup,
     ops::MulByGenerator,
     sec1::{EncodedPoint, FromEncodedPoint, ModulusSize, ToEncodedPoint},
     Curve,
@@ -23,7 +24,7 @@ where
     Self::Curve: CurveArithmetic,
     <Self::Curve as Curve>::FieldBytesSize: ModulusSize,
     <Self::Curve as CurveArithmetic>::AffinePoint: FromEncodedPoint<Self::Curve>,
-    <Self::Curve as CurveArithmetic>::ProjectivePoint: ToEncodedPoint<Self::Curve>,
+    <Self::Curve as CurveArithmetic>::ProjectivePoint: ToEncodedPoint<Self::Curve> + CofactorGroup,
 {
     type Curve;
     type Hasher: Digest
@@ -33,6 +34,9 @@ where
 
     // cipher suite id
     const SUITE_ID: u8;
+
+    // curve cofactor
+    const COFACTOR: Scalar<Self::Curve>;
     // ptLen:  length, in octets, of a point on E encoded as an octet string or close to it)
     const PT_LEN: usize;
     // qLen:  length of q, in octets, i.e., the smallest integer such that 2^(8qLen) > q
@@ -51,7 +55,6 @@ where
         // Step 2-3:  domain separators & cipher suite
         const ENCODE_TO_CURVE_DOMAIN_SEPARATOR_FRONT: u8 = 0x01;
         const ENCODE_TO_CURVE_DOMAIN_SEPARATOR_BACK: u8 = 0x00;
-        let suite_string: u8 = Self::SUITE_ID;
 
         // Step 4-5: Loop over ctr checking if hash_string is a valid EC point
         // hash_string = Hash(suite_string ||
@@ -59,7 +62,7 @@ where
         //               encode_to_curve_salt || alpha_string || ctr_string ||
         //               encode_to_curve_domain_separator_back)
         let mut hash_input = [
-            &[suite_string],
+            &[Self::SUITE_ID],
             &[ENCODE_TO_CURVE_DOMAIN_SEPARATOR_FRONT],
             encode_to_curve_salt,
             alpha,
@@ -79,7 +82,7 @@ where
         let h_point = point_opt.ok_or(VrfError::EncodeToCurveTai)?;
 
         // Step 5d: H = cofactor * H (ECVRF_validate_key)
-        // TODO: recheck cofactor clearing is the same as multiplying by it (p256 has cofactor 1)
+        // TODO(Mario): recheck cofactor clearing is the same as multiplying by it (p256 has cofactor 1)
         // let h_point = ProjectivePoint::<C>::from(h_point).clear_cofactor().to_affine();
 
         Ok(h_point)
@@ -180,7 +183,7 @@ where
 
         let public_key_bytes: Vec<u8> = public_key_point.to_encoded_point(true).to_bytes().to_vec();
 
-        // Step 2: Hash to curve
+        // Step 2: Encode to curve (using TAI)
         let h_point = ProjectivePoint::<Self::Curve>::from(self.encode_to_curve_tai(&public_key_bytes, alpha)?);
         let h_point_bytes = h_point.to_encoded_point(true).to_bytes().to_vec();
 
@@ -223,6 +226,89 @@ where
         Ok(proof)
     }
 
+    fn verify(&self, public_key: &[u8], pi: &[u8], alpha: &[u8]) -> Result<Vec<u8>> {
+        // Step 1-2: Y = string_to_point(PK_string)
+        let public_key_point =
+            <Self::Curve as CurveArithmetic>::ProjectivePoint::from(self.point_from_bytes(public_key)?);
+
+        // Step 3: If validate_key, run ECVRF_validate_key(Y) (Section 5.4.5); if it outputs "INVALID", output "INVALID"
+        // TODO: Check step 3 again
+        if public_key_point.is_small_order().into() {
+            return Err(VrfError::InvalidPoint(
+                "provided public key bytes is not a valid EC point".to_string(),
+            ));
+        }
+
+        // Step 4-6: D = ECVRF_decode_proof(pi_string)
+        let (gamma_point, c_scalar, s_scalar) = self.decode_proof(pi)?;
+        // TODO(Mario): recheck if point_from_bytes should return Projective instead of Affine
+        let gamma_point = <Self::Curve as CurveArithmetic>::ProjectivePoint::from(gamma_point);
+        let gamma_point_bytes = gamma_point.to_encoded_point(true).to_bytes().to_vec();
+
+        // Step 7: H = ECVRF_encode_to_curve(encode_to_curve_salt, alpha_string)
+        let h_point = ProjectivePoint::<Self::Curve>::from(self.encode_to_curve_tai(public_key, alpha)?);
+        let h_point_bytes = h_point.to_encoded_point(true).to_bytes().to_vec();
+
+        // Step 8: U = s*B - c*Y
+        let u_point = <Self::Curve as CurveArithmetic>::ProjectivePoint::mul_by_generator(&s_scalar)
+            - public_key_point * c_scalar;
+        let u_point_bytes = u_point.to_encoded_point(true).to_bytes().to_vec();
+
+        // Step 9: V = s*H - c*Gamma
+        let v_point = h_point * s_scalar - gamma_point * c_scalar;
+        let v_point_bytes = v_point.to_encoded_point(true).to_bytes().to_vec();
+
+        // Step 10: c' = ECVRF_challenge_generation(Y, H, Gamma, U, V)
+        let derived_c_bytes = self.challenge_generation(&[
+            public_key,
+            &h_point_bytes,
+            &gamma_point_bytes,
+            &u_point_bytes,
+            &v_point_bytes,
+        ])?;
+        let mut padded_derived_c_bytes: Vec<u8> = vec![0; <Self::Curve as Curve>::FieldBytesSize::USIZE - Self::C_LEN];
+        padded_derived_c_bytes.extend_from_slice(&derived_c_bytes);
+
+        // Step 11: Check if c and c' are equal
+        let c_bytes = Into::<ScalarPrimitive<Self::Curve>>::into(c_scalar).to_bytes().to_vec();
+
+        if padded_derived_c_bytes != c_bytes {
+            return Err(VrfError::InvalidProof);
+        }
+
+        // If valid VRF proof, ECVRF_proof_to_hash(pi_string)
+        let beta = self.gamma_to_hash(&gamma_point)?;
+
+        Ok(beta)
+    }
+
+    fn gamma_to_hash(&self, gamma: &<Self::Curve as CurveArithmetic>::ProjectivePoint) -> Result<Vec<u8>> {
+        // Step 4: proof_to_hash_domain_separator_front = 0x03
+        const PROOF_TO_HASH_DOMAIN_SEPARATOR_FRONT: u8 = 0x03;
+
+        // Step 5: proof_to_hash_domain_separator_back = 0x00
+        const PROOF_TO_HASH_DOMAIN_SEPARATOR_BACK: u8 = 0x00;
+
+        // Step 6: Compute beta
+        // beta_string = Hash(suite_string || proof_to_hash_domain_separator_front ||
+        //                    point_to_string(cofactor * Gamma) || proof_to_hash_domain_separator_back)
+        let point: ProjectivePoint<Self::Curve> = gamma.mul(Self::COFACTOR);
+        let point_bytes = point.to_encoded_point(true).to_bytes().to_vec();
+
+        let beta = Self::Hasher::digest(
+            [
+                &[Self::SUITE_ID],
+                &[PROOF_TO_HASH_DOMAIN_SEPARATOR_FRONT],
+                &point_bytes[..],
+                &[PROOF_TO_HASH_DOMAIN_SEPARATOR_BACK],
+            ]
+            .concat(),
+        )
+        .to_vec();
+
+        Ok(beta)
+    }
+
     // ECVRF_nonce_generation_RFC6979(SK, h_string)
     fn generate_nonce(&self, secret_key: &[u8], digest_msg: &[u8]) -> Result<Scalar<Self::Curve>> {
         let k = rfc6979::generate_k::<Self::Hasher, <Self::Curve as Curve>::FieldBytesSize>(
@@ -242,6 +328,7 @@ impl EcVrf for P256Sha256 {
     type Curve = p256::NistP256;
     type Hasher = sha2::Sha256;
 
+    const COFACTOR: Scalar<Self::Curve> = <Self::Curve as CurveArithmetic>::Scalar::ONE;
     const C_LEN: usize = Self::Q_LEN / 2;
     const PT_LEN: usize = <Self::Curve as Curve>::Uint::MAX.bits() / 8;
     const Q_LEN: usize = <Self::Curve as Curve>::ORDER.bits() / 8;
@@ -254,6 +341,7 @@ impl EcVrf for Secp256k1Sha256 {
     type Curve = k256::Secp256k1;
     type Hasher = sha2::Sha256;
 
+    const COFACTOR: Scalar<Self::Curve> = <Self::Curve as CurveArithmetic>::Scalar::ONE;
     const C_LEN: usize = Self::Q_LEN / 2;
     const PT_LEN: usize = <Self::Curve as Curve>::Uint::MAX.bits() / 8;
     const Q_LEN: usize = <Self::Curve as Curve>::ORDER.bits() / 8;
@@ -349,6 +437,21 @@ mod test {
             "035b5c726e8c0e2c488a107c600578ee75cb702343c153cb1eb8dec77f4b5071b4a53f0a46f018bc2c56e58d383f2305e0975972c26feea0eb122fe7893c15af376b33edf7de17c6ea056d4d82de6bc02f"
         ).to_vec();
         assert_eq!(pi, expected_pi);
+    }
+
+    /// Source: Example 10
+    #[test]
+    fn test_verify_p256_sha256_tai_1() {
+        let vrf = P256Sha256;
+        let public_key = hex!("0360fed4ba255a9d31c961eb74c6356d68c049b8923b61fa6ce669622e60f29fb6");
+        let alpha = b"sample";
+        let pi = hex!(
+            "035b5c726e8c0e2c488a107c600578ee75cb702343c153cb1eb8dec77f4b5071b4a53f0a46f018bc2c56e58d383f2305e0975972c26feea0eb122fe7893c15af376b33edf7de17c6ea056d4d82de6bc02f"
+        );
+        let beta = vrf.verify(&public_key, &pi, alpha).unwrap();
+
+        let expected_beta = hex!("a3ad7b0ef73d8fc6655053ea22f9bede8c743f08bbed3d38821f0e16474b505e");
+        assert_eq!(beta, expected_beta);
     }
 
     // #[test]
