@@ -87,45 +87,36 @@ where
 
     // ECVRF_challenge_generation
     fn challenge_generation(&self, points: &[&[u8]]) -> Result<Vec<u8>> {
-        // TODO: change this
-        // ECVRF_P256_SHA256_TAI
-        let suite_string: u8 = 0x01;
-
+        // Step 1: challenge_generation_domain_separator_front = 0x02
         const CHALLENGE_GENERATION_DOMAIN_SEPARATOR_FRONT: u8 = 0x02;
-        const CHALLENGE_GENERATION_DOMAIN_SEPARATOR_BACK: u8 = 0x00;
 
         // point_bytes = [P1||P2||...||Pn]
-        // 1. challenge_generation_domain_separator_front = 0x02
-        let point_bytes: Result<Vec<u8>> = points
-            .iter()
-            // 2. Initialize str = suite_string || challenge_generation_domain_separator_front
-            // 3. For PJ in [P1, P2, P3, P4, P5]: str = str || point_to_string(PJ)
-            .try_fold(
-                vec![suite_string, CHALLENGE_GENERATION_DOMAIN_SEPARATOR_FRONT],
+        let point_bytes: Result<Vec<u8>> = points.iter().try_fold(
+            // Step 2: Initialize str = suite_string || challenge_generation_domain_separator_front
+            vec![Self::SUITE_ID, CHALLENGE_GENERATION_DOMAIN_SEPARATOR_FRONT],
+            // Step 3: For PJ in [P1, P2, P3, P4, P5]: str = str || point_to_string(PJ)
                 |mut acc, &point| {
-                    // The point_to_string function converts a point on E to an octet string with point compression on.
-                    // This implies that ptLen = fLen + 1 = 33.
                     acc.extend(point.to_vec());
 
                     Ok(acc)
                 },
             );
         let to_be_hashed = point_bytes?;
-        // 4. challenge_generation_domain_separator_back = 0x00
-        // 5. str = str || challenge_generation_domain_separator_back
-        // 6. c_string = Hash(str)
 
-        // H(suite_string || challenge_generation_domain_separator_front || point_bytes ||
+        // Step 4: challenge_generation_domain_separator_back = 0x00
+        const CHALLENGE_GENERATION_DOMAIN_SEPARATOR_BACK: u8 = 0x00;
+
+        // Step 5-6: c_String = Hash(str) = Hash (str || challenge_generation_domain_separator_back)
+        // Hash (suite_string || challenge_generation_domain_separator_front || point_bytes ||
         // challenge_generation_domain_separator_back)
         let mut c_string =
             Self::Hasher::digest([&to_be_hashed[..], &[CHALLENGE_GENERATION_DOMAIN_SEPARATOR_BACK]].concat()).to_vec();
 
-        // 7. truncated_c_string = c_string[0]...c_string[cLen-1]
+        // Step 7: truncated_c_string = c_string[0]...c_string[cLen-1]
         c_string.truncate(Self::C_LEN);
 
-        // TODO(Mario): Check if we need to conver to integer
-        // 8. c = string_to_int(truncated_c_string)
-        // let c = BigNum::from_slice(c_string.as_slice())?;
+        // Step 8: c = string_to_int(truncated_c_string)
+        // Note: not needed because `prove` and `verify` functions need bytes and scalar values
 
         Ok(c_string)
     }
