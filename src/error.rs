@@ -2,22 +2,18 @@ use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum VrfError {
-    #[error("ECDSA error: {0}")]
-    Ecdsa(#[from] p256::ecdsa::Error),
-    #[error("Elliptic Curve error: {0}")]
-    EllipticCurve(#[from] p256::elliptic_curve::Error),
-    #[error("Encode to Point (TAI) error: could not find a valid EC point")]
+    #[error("affine: cannot convert from bytes to affine point")]
+    AffineFromBytes,
+    #[error("encode_to_curve: cannot find a valid EC point using TAI")]
     EncodeToCurveTai,
-    #[error("Encoded Point error: {0}")]
-    EncodedPoint(String),
-    #[error("Affine Point error: {0}")]
-    AffinePoint(String),
-    #[error("Invalid Proof while verifying")]
-    InvalidProof,
-    #[error("Invalid proof length")]
+    #[error("decode_proof: invalid proof (pi) length")]
     InvalidPiLength,
-    // TweakOutOfRange,
-    // InvalidAffine,
+    #[error("verify: invalid proof")]
+    InvalidProof,
+    #[error("scalar: cannot convert from bytes to scalar")]
+    ScalarFromBytes,
+    #[error("verify: invalid public key")]
+    VerifyInvalidKey,
 }
 
 pub type Result<T, E = VrfError> = core::result::Result<T, E>;

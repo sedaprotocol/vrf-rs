@@ -44,6 +44,32 @@ where
     // cLen:  length, in octets, of a challenge value used by the VRF (note that in the typical case, cLen is qLen/2
     const C_LEN: usize;
 
+    /// Function to encode a hash, derived from the public key and a given data, to a point in the curve as stated in
+    /// the [RFC9381](https://datatracker.ietf.org/doc/rfc9381/) (ECVRF_encode_to_curve_try_and_increment, section 5.4.1.1).
+    ///
+    /// `ECVRF_encode_to_curve_try_and_increment` implements `ECVRF_encode_to_curve` in a simple and generic way that
+    /// works for any elliptic curve.
+    ///
+    /// To use this algorithm, `hLen` MUST be at least `fLen`, where:
+    /// - `hLen` is the output length, in octets, of Hash.
+    /// - `fLen` is length, in octets, of an element in F encoded as an octet string
+    ///
+    /// The running time of this algorithm depends on `alpha`. For most ciphersuites, this algorithm is expected to find
+    /// a valid curve point after approximately two attempts (i.e., when ctr = 1) on average.
+    /// It is overwhelmingly unlikely that the algorithm does not find a solution (the probability that the ctr counter
+    /// reaches 256 is about 2^-256).
+    ///
+    /// However, because the algorithm's running time depends on alpha_string, this algorithm SHOULD be avoided in
+    /// applications where it is important that the VRF input alpha remain secret.
+    ///
+    /// # Arguments
+    ///
+    /// * `encode_to_curve_salt` - A public salt value, an octet string.
+    /// * `alpha`                - A slice containing the input data, to be hashed.
+    ///
+    /// # Returns
+    ///
+    /// * If successful, an EC point representing the hashed value.
     fn encode_to_curve_tai(
         &self,
         encode_to_curve_salt: &[u8],
@@ -82,13 +108,27 @@ where
         let h_point = point_opt.ok_or(VrfError::EncodeToCurveTai)?;
 
         // Step 5d: H = cofactor * H (ECVRF_validate_key)
-        // TODO(Mario): recheck cofactor clearing is the same as multiplying by it (p256 has cofactor 1)
-        // let h_point = ProjectivePoint::<C>::from(h_point).clear_cofactor().to_affine();
+        // TODO: Check step 5d alternative `ProjectivePoint::<Self::Curve>::from(h_point).clear_cofactor().to_affine()`
+        if Self::COFACTOR != Into::into(1) {
+            return Ok(elliptic_curve::group::Curve::to_affine(
+                &ProjectivePoint::<Self::Curve>::from(h_point).mul(Self::COFACTOR),
+            ));
+        }
+        // let h_point = h_point
 
         Ok(h_point)
     }
 
-    // ECVRF_challenge_generation
+    /// Function to hash a certain set of points.
+    /// Spec: `ECVRF_challenge_generation` function in section 5.4.3.
+    ///
+    /// # Arguments
+    ///
+    /// * `points` - A reference to an array containing the points that need to be hashed.
+    ///
+    /// # Returns
+    ///
+    /// * If successful, a challenge value, an integer between `0` and `2^(8*cLen)-1`. Truncated to length `cLen`.
     fn challenge_generation(&self, points: &[&[u8]]) -> Result<Vec<u8>> {
         // Step 1: challenge_generation_domain_separator_front = 0x02
         const CHALLENGE_GENERATION_DOMAIN_SEPARATOR_FRONT: u8 = 0x02;
@@ -98,12 +138,12 @@ where
             // Step 2: Initialize str = suite_string || challenge_generation_domain_separator_front
             vec![Self::SUITE_ID, CHALLENGE_GENERATION_DOMAIN_SEPARATOR_FRONT],
             // Step 3: For PJ in [P1, P2, P3, P4, P5]: str = str || point_to_string(PJ)
-                |mut acc, &point| {
-                    acc.extend(point.to_vec());
+            |mut acc, &point| {
+                acc.extend(point.to_vec());
 
-                    Ok(acc)
-                },
-            );
+                Ok(acc)
+            },
+        );
         let to_be_hashed = point_bytes?;
 
         // Step 4: challenge_generation_domain_separator_back = 0x00
@@ -124,7 +164,16 @@ where
         Ok(c_string)
     }
 
-    // ECVRF_decode_proof(pi_string)
+    /// Decodes a VRF proof by extracting the gamma EC point, and parameters `c` and `s` as bytes.
+    /// Spec: `ECVRF_decode_proof` function in section 5.4.4.
+    ///
+    /// # Arguments
+    ///
+    /// * `pi`  - A slice of octets representing the VRF proof
+    ///
+    /// # Returns
+    ///
+    /// * A tuple containing `gamma` point, and parameters `c` and `s`.
     fn decode_proof(&self, pi: &[u8]) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         // Expected size of proof: len(pi) = len(gamma) + len(c) + len(s)
         // len(s) = 2 * len(c), so len(pi) = len(gamma) + 3 * len(c)
@@ -146,6 +195,16 @@ where
         Ok((gamma, c_scalar, s_scalar))
     }
 
+    /// Function to interpret an array of bytes as a point in the curve.
+    /// Spec: `interpret_hash_value_as_a_point(s) = sring_to_point(0x02 || s)` (section 5.5).
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - A slice representing the data to be converted to a point.
+    ///
+    /// # Returns
+    ///
+    /// * If successful, an EC affine point representing the converted point.
     fn try_hash_to_point(&self, data: &[u8]) -> Result<<Self::Curve as CurveArithmetic>::AffinePoint> {
         let mut point_bytes = vec![0x02];
         point_bytes.extend(data);
@@ -153,25 +212,112 @@ where
         self.point_from_bytes(&point_bytes)
     }
 
+    /// Auxiliary function to convert an encoded point (as bytes) to a point in the curve.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - A slice representing the encoded data point.
+    ///
+    /// # Returns
+    ///
+    /// * If successful, an EC affine point representing the converted point.
     fn point_from_bytes(&self, data: &[u8]) -> Result<<Self::Curve as CurveArithmetic>::AffinePoint> {
         let encoded_point: EncodedPoint<Self::Curve> =
-            EncodedPoint::<Self::Curve>::from_bytes(data).map_err(|e| VrfError::EncodedPoint(e.to_string()))?;
+            EncodedPoint::<Self::Curve>::from_bytes(data).map_err(|_| VrfError::AffineFromBytes)?;
 
         Option::from(<Self::Curve as CurveArithmetic>::AffinePoint::from_encoded_point(
             &encoded_point,
         ))
-            .ok_or(VrfError::AffinePoint("invalid encoded point".to_string()))
+        .ok_or(VrfError::AffineFromBytes)
     }
 
+    /// Auxiliary function to convert an encoded scalar (as bytes) to a field scalar.
+    ///
+    /// # Arguments
+    ///
+    /// * `data` - A slice representing the encoded scalar.
+    ///
+    /// # Returns
+    ///
+    /// * If successful, a field scalar.
     fn scalar_from_bytes(&self, data: &[u8]) -> Result<Scalar<Self::Curve>> {
-        let primitive = ScalarPrimitive::<Self::Curve>::from_slice(data)?;
+        let primitive = ScalarPrimitive::<Self::Curve>::from_slice(data).map_err(|_| VrfError::ScalarFromBytes)?;
 
         Ok(primitive.into())
     }
 
+    /// Function to compute VRF hash output for a given gamma point (part of the VRF proof).
+    /// Spec: `ECVRF_proof_to_hash` function (steps 4-to 7).
+    ///
+    /// # Arguments
+    ///
+    /// * `gamma`  - An EC point representing the VRF gamma.
+    ///
+    /// # Returns
+    ///
+    /// * A vector of octets with the VRF hash output.
+    fn gamma_to_hash(&self, gamma: &<Self::Curve as CurveArithmetic>::ProjectivePoint) -> Result<Vec<u8>> {
+        // Step 4: proof_to_hash_domain_separator_front = 0x03
+        const PROOF_TO_HASH_DOMAIN_SEPARATOR_FRONT: u8 = 0x03;
+
+        // Step 5: proof_to_hash_domain_separator_back = 0x00
+        const PROOF_TO_HASH_DOMAIN_SEPARATOR_BACK: u8 = 0x00;
+
+        // Step 6: Compute beta
+        // beta_string = Hash(suite_string || proof_to_hash_domain_separator_front ||
+        //                    point_to_string(cofactor * Gamma) || proof_to_hash_domain_separator_back)
+        let point: ProjectivePoint<Self::Curve> = gamma.mul(Self::COFACTOR);
+        let point_bytes = point.to_encoded_point(true).to_bytes().to_vec();
+
+        let beta = Self::Hasher::digest(
+            [
+                &[Self::SUITE_ID],
+                &[PROOF_TO_HASH_DOMAIN_SEPARATOR_FRONT],
+                &point_bytes[..],
+                &[PROOF_TO_HASH_DOMAIN_SEPARATOR_BACK],
+            ]
+            .concat(),
+        )
+        .to_vec();
+
+        Ok(beta)
+    }
+
+    /// Function to generate a nonce deterministically by following the algorithm described in the [RFC6979](https://tools.ietf.org/html/rfc6979).
+    /// Spec: `ECVRF_nonce_generation_RFC6979` function (section 5.4.2.1.)
+    ///
+    /// # Arguments
+    ///
+    /// * `secret_key`  - A scalar representing the secret key.
+    /// * `data`        - A slice of octets representing the data (message).
+    ///
+    /// # Returns
+    ///
+    /// * If successful, the scalar representing the nonce.
+    fn generate_nonce(&self, secret_key: &[u8], digest_msg: &[u8]) -> Result<Scalar<Self::Curve>> {
+        let k = rfc6979::generate_k::<Self::Hasher, <Self::Curve as Curve>::FieldBytesSize>(
+            secret_key.into(),
+            &FieldBytesEncoding::encode_field_bytes(&<Self::Curve as Curve>::ORDER),
+            digest_msg.into(),
+            &[],
+        );
+
+        self.scalar_from_bytes(&k)
+    }
+
+    /// Generates a VRF proof from a secret key and message.
+    /// Spec: `ECVRF_prove` function (section 5.1).
+    ///
+    /// # Arguments
+    ///
+    /// * `x` - A slice representing the secret key in octets.
+    /// * `alpha` - A slice representing the message in octets.
+    ///
+    /// # Returns
+    ///
+    /// * If successful, a vector of octets representing the proof of the VRF.
     fn prove(&self, secret_key: &[u8], alpha: &[u8]) -> Result<Vec<u8>> {
         // Step 1: derive public key from secret key as `Y = x * B`
-        //TODO: validate secret key length?
         let secret_key_scalar = self.scalar_from_bytes(secret_key)?;
         let public_key_point = <Self::Curve as CurveArithmetic>::ProjectivePoint::mul_by_generator(&secret_key_scalar);
 
@@ -220,17 +366,26 @@ where
         Ok(proof)
     }
 
+    /// Verifies the provided VRF proof and computes the VRF hash output.
+    /// Spec: `ECVRF_verify` function (section 5.2).
+    ///
+    /// # Arguments
+    ///
+    /// * `y`   - A slice representing the public key in octets.
+    /// * `pi`  - A slice of octets representing the VRF proof.
+    ///
+    /// # Returns
+    ///
+    /// * If successful, a vector of octets with the VRF hash output.
     fn verify(&self, public_key: &[u8], pi: &[u8], alpha: &[u8]) -> Result<Vec<u8>> {
         // Step 1-2: Y = string_to_point(PK_string)
         let public_key_point =
             <Self::Curve as CurveArithmetic>::ProjectivePoint::from(self.point_from_bytes(public_key)?);
 
-        // Step 3: If validate_key, run ECVRF_validate_key(Y) (Section 5.4.5); if it outputs "INVALID", output "INVALID"
+        // Step 3: If validate_key, run ECVRF_validate_key(Y) (Section 5.4.5)
         // TODO: Check step 3 again
         if public_key_point.is_small_order().into() {
-            return Err(VrfError::InvalidPoint(
-                "provided public key bytes is not a valid EC point".to_string(),
-            ));
+            return Err(VrfError::VerifyInvalidKey);
         }
 
         // Step 4-6: D = ECVRF_decode_proof(pi_string)
@@ -273,45 +428,6 @@ where
         let beta = self.gamma_to_hash(&gamma_point)?;
 
         Ok(beta)
-    }
-
-    fn gamma_to_hash(&self, gamma: &<Self::Curve as CurveArithmetic>::ProjectivePoint) -> Result<Vec<u8>> {
-        // Step 4: proof_to_hash_domain_separator_front = 0x03
-        const PROOF_TO_HASH_DOMAIN_SEPARATOR_FRONT: u8 = 0x03;
-
-        // Step 5: proof_to_hash_domain_separator_back = 0x00
-        const PROOF_TO_HASH_DOMAIN_SEPARATOR_BACK: u8 = 0x00;
-
-        // Step 6: Compute beta
-        // beta_string = Hash(suite_string || proof_to_hash_domain_separator_front ||
-        //                    point_to_string(cofactor * Gamma) || proof_to_hash_domain_separator_back)
-        let point: ProjectivePoint<Self::Curve> = gamma.mul(Self::COFACTOR);
-        let point_bytes = point.to_encoded_point(true).to_bytes().to_vec();
-
-        let beta = Self::Hasher::digest(
-            [
-                &[Self::SUITE_ID],
-                &[PROOF_TO_HASH_DOMAIN_SEPARATOR_FRONT],
-                &point_bytes[..],
-                &[PROOF_TO_HASH_DOMAIN_SEPARATOR_BACK],
-            ]
-            .concat(),
-        )
-        .to_vec();
-
-        Ok(beta)
-    }
-
-    // ECVRF_nonce_generation_RFC6979(SK, h_string)
-    fn generate_nonce(&self, secret_key: &[u8], digest_msg: &[u8]) -> Result<Scalar<Self::Curve>> {
-        let k = rfc6979::generate_k::<Self::Hasher, <Self::Curve as Curve>::FieldBytesSize>(
-            secret_key.into(),
-            &FieldBytesEncoding::encode_field_bytes(&<Self::Curve as Curve>::ORDER),
-            digest_msg.into(),
-            &[],
-        );
-
-        self.scalar_from_bytes(&k)
     }
 }
 
@@ -430,12 +546,4 @@ mod test {
         let expected_beta = hex!("a3ad7b0ef73d8fc6655053ea22f9bede8c743f08bbed3d38821f0e16474b505e");
         assert_eq!(beta, expected_beta);
     }
-
-    // #[test]
-    // fn playground() {
-    //     const C_LEN: usize = Q_LEN / 2;
-    //     const PT_LEN: usize = <NistP256 as Curve>::Uint::MAX.bits() / 8;
-    //     const Q_LEN: usize = <NistP256 as Curve>::ORDER.bits() / 8;
-    //     println!("====> pt_len {}, q_len {}, c_len: {}", PT_LEN, Q_LEN, C_LEN);
-    // }
 }
