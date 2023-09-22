@@ -125,14 +125,7 @@ where
     }
 
     // ECVRF_decode_proof(pi_string)
-    fn decode_proof(
-        &self,
-        pi: &[u8],
-    ) -> Result<(
-        <Self::Curve as CurveArithmetic>::AffinePoint,
-        <Self::Curve as CurveArithmetic>::Scalar,
-        <Self::Curve as CurveArithmetic>::Scalar,
-    )> {
+    fn decode_proof(&self, pi: &[u8]) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>)> {
         // Expected size of proof: len(pi) = len(gamma) + len(c) + len(s)
         // len(s) = 2 * len(c), so len(pi) = len(gamma) + 3 * len(c)
         let gamma_oct = Self::PT_LEN + 1;
@@ -141,13 +134,14 @@ where
         }
 
         // Gamma point
-        let gamma = self.point_from_bytes(&pi[0..gamma_oct])?;
+        let gamma = pi[0..gamma_oct].to_vec();
+
         // C scalar (needs to be padded with leading zeroes)
-        let mut c_bytes: Vec<u8> = vec![0; <Self::Curve as Curve>::FieldBytesSize::USIZE - Self::C_LEN];
-        c_bytes.extend_from_slice(&pi[gamma_oct..gamma_oct + Self::C_LEN]);
-        let c_scalar = self.scalar_from_bytes(&c_bytes)?;
+        let mut c_scalar: Vec<u8> = vec![0; <Self::Curve as Curve>::FieldBytesSize::USIZE - Self::C_LEN];
+        c_scalar.extend_from_slice(&pi[gamma_oct..gamma_oct + Self::C_LEN]);
+
         // S scalar
-        let s_scalar = self.scalar_from_bytes(&pi[gamma_oct + Self::C_LEN..])?;
+        let s_scalar = pi[gamma_oct + Self::C_LEN..].to_vec();
 
         Ok((gamma, c_scalar, s_scalar))
     }
@@ -240,10 +234,11 @@ where
         }
 
         // Step 4-6: D = ECVRF_decode_proof(pi_string)
-        let (gamma_point, c_scalar, s_scalar) = self.decode_proof(pi)?;
-        // TODO(Mario): recheck if point_from_bytes should return Projective instead of Affine
-        let gamma_point = <Self::Curve as CurveArithmetic>::ProjectivePoint::from(gamma_point);
-        let gamma_point_bytes = gamma_point.to_encoded_point(true).to_bytes().to_vec();
+        let (gamma_point_bytes, c_scalar_bytes, s_scalar_bytes) = self.decode_proof(pi)?;
+        let gamma_point =
+            <Self::Curve as CurveArithmetic>::ProjectivePoint::from(self.point_from_bytes(&gamma_point_bytes)?);
+        let c_scalar = self.scalar_from_bytes(&c_scalar_bytes)?;
+        let s_scalar = self.scalar_from_bytes(&s_scalar_bytes)?;
 
         // Step 7: H = ECVRF_encode_to_curve(encode_to_curve_salt, alpha_string)
         let h_point = ProjectivePoint::<Self::Curve>::from(self.encode_to_curve_tai(public_key, alpha)?);
@@ -270,9 +265,7 @@ where
         padded_derived_c_bytes.extend_from_slice(&derived_c_bytes);
 
         // Step 11: Check if c and c' are equal
-        let c_bytes = Into::<ScalarPrimitive<Self::Curve>>::into(c_scalar).to_bytes().to_vec();
-
-        if padded_derived_c_bytes != c_bytes {
+        if padded_derived_c_bytes != c_scalar_bytes {
             return Err(VrfError::InvalidProof);
         }
 
@@ -385,32 +378,16 @@ mod test {
         let pi = hex!(
             "035b5c726e8c0e2c488a107c600578ee75cb702343c153cb1eb8dec77f4b5071b4a53f0a46f018bc2c56e58d383f2305e0975972c26feea0eb122fe7893c15af376b33edf7de17c6ea056d4d82de6bc02f"
         );
-        let (gamma_point, c_scalar, s_scalar) = vrf.decode_proof(&pi).unwrap();
+        let (gamma, c, s) = vrf.decode_proof(&pi).unwrap();
 
         // Expected values
-        let expected_gamma = p256::AffinePoint::try_from(
-            p256::EncodedPoint::from_bytes(hex!(
-                "035b5c726e8c0e2c488a107c600578ee75cb702343c153cb1eb8dec77f4b5071b4"
-            ))
-            .unwrap(),
-        )
-        .unwrap();
-        let expected_c = p256::Scalar::from(
-            ScalarPrimitive::from_slice(&hex!(
-                "00000000000000000000000000000000a53f0a46f018bc2c56e58d383f2305e0"
-            ))
-            .unwrap(),
-        );
-        let expected_s = p256::Scalar::from(
-            ScalarPrimitive::from_slice(&hex!(
-                "975972c26feea0eb122fe7893c15af376b33edf7de17c6ea056d4d82de6bc02f"
-            ))
-            .unwrap(),
-        );
+        let expected_gamma = hex!("035b5c726e8c0e2c488a107c600578ee75cb702343c153cb1eb8dec77f4b5071b4");
+        let expected_c = hex!("00000000000000000000000000000000a53f0a46f018bc2c56e58d383f2305e0");
+        let expected_s = hex!("975972c26feea0eb122fe7893c15af376b33edf7de17c6ea056d4d82de6bc02f");
 
-        assert!(expected_gamma.eq(&gamma_point));
-        assert!(c_scalar.eq(&expected_c));
-        assert!(s_scalar.eq(&expected_s));
+        assert_eq!(gamma, expected_gamma);
+        assert_eq!(c, expected_c);
+        assert_eq!(s, expected_s);
     }
 
     /// Source: RFC 6979 (A.2.5.  ECDSA, 256 Bits (Prime Field))
