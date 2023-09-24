@@ -134,7 +134,7 @@ where
         const CHALLENGE_GENERATION_DOMAIN_SEPARATOR_FRONT: u8 = 0x02;
 
         // point_bytes = [P1||P2||...||Pn]
-        let point_bytes: Result<Vec<u8>> = points.iter().try_fold(
+        let point_bytes = points.iter().try_fold(
             // Step 2: Initialize str = suite_string || challenge_generation_domain_separator_front
             vec![Self::SUITE_ID, CHALLENGE_GENERATION_DOMAIN_SEPARATOR_FRONT],
             // Step 3: For PJ in [P1, P2, P3, P4, P5]: str = str || point_to_string(PJ)
@@ -143,25 +143,24 @@ where
 
                 Ok(acc)
             },
-        );
-        let to_be_hashed = point_bytes?;
+        )?;
 
         // Step 4: challenge_generation_domain_separator_back = 0x00
         const CHALLENGE_GENERATION_DOMAIN_SEPARATOR_BACK: u8 = 0x00;
 
-        // Step 5-6: c_String = Hash(str) = Hash (str || challenge_generation_domain_separator_back)
+        // Step 5-6: c_string = Hash(str) = Hash (str || challenge_generation_domain_separator_back)
         // Hash (suite_string || challenge_generation_domain_separator_front || point_bytes ||
         // challenge_generation_domain_separator_back)
-        let mut c_string =
-            Self::Hasher::digest([&to_be_hashed[..], &[CHALLENGE_GENERATION_DOMAIN_SEPARATOR_BACK]].concat()).to_vec();
+        let mut c_bytes =
+            Self::Hasher::digest([&point_bytes[..], &[CHALLENGE_GENERATION_DOMAIN_SEPARATOR_BACK]].concat()).to_vec();
 
         // Step 7: truncated_c_string = c_string[0]...c_string[cLen-1]
-        c_string.truncate(Self::C_LEN);
+        c_bytes.truncate(Self::C_LEN);
 
         // Step 8: c = string_to_int(truncated_c_string)
         // Note: not needed because `prove` and `verify` functions need bytes and scalar values
 
-        Ok(c_string)
+        Ok(c_bytes)
     }
 
     /// Decodes a VRF proof by extracting the gamma EC point, and parameters `c` and `s` as bytes.
@@ -206,10 +205,7 @@ where
     ///
     /// * If successful, an EC affine point representing the converted point.
     fn try_hash_to_point(&self, data: &[u8]) -> Result<<Self::Curve as CurveArithmetic>::AffinePoint> {
-        let mut point_bytes = vec![0x02];
-        point_bytes.extend(data);
-
-        self.point_from_bytes(&point_bytes)
+        self.point_from_bytes(&[&[0x02], data].concat())
     }
 
     /// Auxiliary function to convert an encoded point (as bytes) to a point in the curve.
@@ -267,7 +263,7 @@ where
         // beta_string = Hash(suite_string || proof_to_hash_domain_separator_front ||
         //                    point_to_string(cofactor * Gamma) || proof_to_hash_domain_separator_back)
         let point: ProjectivePoint<Self::Curve> = gamma.mul(Self::COFACTOR);
-        let point_bytes = point.to_encoded_point(true).to_bytes().to_vec();
+        let point_bytes = point.to_encoded_point(true).as_bytes().to_vec();
 
         let beta = Self::Hasher::digest(
             [
@@ -321,29 +317,28 @@ where
         let secret_key_scalar = self.scalar_from_bytes(secret_key)?;
         let public_key_point = <Self::Curve as CurveArithmetic>::ProjectivePoint::mul_by_generator(&secret_key_scalar);
 
-        let public_key_bytes: Vec<u8> = public_key_point.to_encoded_point(true).to_bytes().to_vec();
+        let public_key_bytes: Vec<u8> = public_key_point.to_encoded_point(true).as_bytes().to_vec();
 
         // Step 2: Encode to curve (using TAI)
         let h_point = ProjectivePoint::<Self::Curve>::from(self.encode_to_curve_tai(&public_key_bytes, alpha)?);
-        let h_point_bytes = h_point.to_encoded_point(true).to_bytes().to_vec();
 
         // Step 3: point to string (or bytes)
-        let h_bytes = h_point.to_encoded_point(true).to_bytes().to_vec();
+        let h_point_bytes = h_point.to_encoded_point(true).as_bytes().to_vec();
 
         // Step 4: Gamma = x * H
         let gamma_point = h_point.mul(secret_key_scalar);
-        let gamma_point_bytes = gamma_point.to_encoded_point(true).to_bytes().to_vec();
+        let gamma_point_bytes = gamma_point.to_encoded_point(true).as_bytes().to_vec();
 
         // Step 5: nonce (k generation)
-        let k_scalar = self.generate_nonce(secret_key, &Self::Hasher::digest(h_bytes))?;
+        let k_scalar = self.generate_nonce(secret_key, &Self::Hasher::digest(&h_point_bytes))?;
 
         // Step 6: c = ECVRF_challenge_generation (Y, H, Gamma, U, V)
         // U = k*B = k&Generator
         let u_point = <Self::Curve as CurveArithmetic>::ProjectivePoint::mul_by_generator(&k_scalar);
-        let u_point_bytes = u_point.to_encoded_point(true).to_bytes().to_vec();
+        let u_point_bytes = u_point.to_encoded_point(true).as_bytes().to_vec();
         // V = k*H
         let v_point = h_point * k_scalar;
-        let v_point_bytes = v_point.to_encoded_point(true).to_bytes().to_vec();
+        let v_point_bytes = v_point.to_encoded_point(true).as_bytes().to_vec();
         // Challenge generation (returns hash output truncated by `cLen`)
         let c_scalar_bytes = self.challenge_generation(&[
             &public_key_bytes,
@@ -397,16 +392,16 @@ where
 
         // Step 7: H = ECVRF_encode_to_curve(encode_to_curve_salt, alpha_string)
         let h_point = ProjectivePoint::<Self::Curve>::from(self.encode_to_curve_tai(public_key, alpha)?);
-        let h_point_bytes = h_point.to_encoded_point(true).to_bytes().to_vec();
+        let h_point_bytes = h_point.to_encoded_point(true).as_bytes().to_vec();
 
         // Step 8: U = s*B - c*Y
         let u_point = <Self::Curve as CurveArithmetic>::ProjectivePoint::mul_by_generator(&s_scalar)
             - public_key_point * c_scalar;
-        let u_point_bytes = u_point.to_encoded_point(true).to_bytes().to_vec();
+        let u_point_bytes = u_point.to_encoded_point(true).as_bytes().to_vec();
 
         // Step 9: V = s*H - c*Gamma
         let v_point = h_point * s_scalar - gamma_point * c_scalar;
-        let v_point_bytes = v_point.to_encoded_point(true).to_bytes().to_vec();
+        let v_point_bytes = v_point.to_encoded_point(true).as_bytes().to_vec();
 
         // Step 10: c' = ECVRF_challenge_generation(Y, H, Gamma, U, V)
         let derived_c_bytes = self.challenge_generation(&[
