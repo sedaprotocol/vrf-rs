@@ -1,5 +1,6 @@
 use thiserror::Error;
 
+/// VRF errors
 #[derive(Error, Debug)]
 pub enum VrfError {
     #[error("affine: cannot convert from bytes to affine point")]
