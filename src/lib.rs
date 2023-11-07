@@ -5,6 +5,9 @@ pub mod error;
 mod nonce;
 mod utils;
 
+#[cfg(test)]
+mod tests;
+
 pub struct VrfStruct<Curve, Hasher> {
     // Elliptic Curve
     pub curve:    Curve,
@@ -44,10 +47,4 @@ impl Default for Secp256k1Sha256 {
             suite_id: 0xFE,
         }
     }
-}
-
-#[cfg(test)]
-#[path = ""]
-pub mod test {
-    mod ecvrf_test;
 }
