@@ -25,7 +25,7 @@ where
     /// # Returns
     ///
     /// * If successful, an EC affine point representing the converted point.
-    pub fn point_from_bytes(&self, data: &[u8]) -> Result<C::AffinePoint> {
+    pub(super) fn point_from_bytes(&self, data: &[u8]) -> Result<C::AffinePoint> {
         let encoded_point: EncodedPoint<C> =
             EncodedPoint::<C>::from_bytes(data).map_err(|_| VrfError::AffineFromBytes)?;
 
@@ -42,7 +42,7 @@ where
     /// # Returns
     ///
     /// * If successful, an EC affine point representing the converted point.
-    pub fn try_hash_to_point(&self, data: &[u8]) -> Result<C::AffinePoint> {
+    pub(super) fn try_hash_to_point(&self, data: &[u8]) -> Result<C::AffinePoint> {
         self.point_from_bytes(&[&[0x02], data].concat())
     }
 
@@ -55,7 +55,7 @@ where
     /// # Returns
     ///
     /// * If successful, a field scalar.
-    pub fn scalar_from_bytes(&self, data: &[u8]) -> Result<Scalar<C>> {
+    pub(super) fn scalar_from_bytes(&self, data: &[u8]) -> Result<Scalar<C>> {
         let primitive = ScalarPrimitive::<C>::from_slice(data).map_err(|_| VrfError::ScalarFromBytes)?;
 
         Ok(primitive.into())

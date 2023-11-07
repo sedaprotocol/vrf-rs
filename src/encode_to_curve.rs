@@ -45,7 +45,7 @@ where
     /// # Returns
     ///
     /// * If successful, an EC point representing the hashed value.
-    pub fn encode_to_curve_tai(&self, encode_to_curve_salt: &[u8], alpha: &[u8]) -> Result<C::AffinePoint> {
+    pub(super) fn encode_to_curve_tai(&self, encode_to_curve_salt: &[u8], alpha: &[u8]) -> Result<C::AffinePoint> {
         // Step 1:  ctr = 0
         let mut ctr_range = 0..255;
 

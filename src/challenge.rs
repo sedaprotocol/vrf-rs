@@ -19,7 +19,7 @@ where
     /// # Returns
     ///
     /// * If successful, a challenge value, an integer between `0` and `2^(8*cLen)-1`. Truncated to length `cLen`.
-    pub fn challenge_generation(&self, points: &[&[u8]], truncate_len: usize) -> Result<Vec<u8>> {
+    pub(super) fn challenge_generation(&self, points: &[&[u8]], truncate_len: usize) -> Result<Vec<u8>> {
         // Step 1: challenge_generation_domain_separator_front = 0x02
         const CHALLENGE_GENERATION_DOMAIN_SEPARATOR_FRONT: u8 = 0x02;
 
