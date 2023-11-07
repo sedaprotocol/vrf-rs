@@ -91,7 +91,7 @@ where
         let gamma_point_bytes = gamma_point.to_encoded_point(true).as_bytes().to_vec();
 
         // Step 5: nonce (k generation)
-        let k_scalar = self.generate_nonce(secret_key, &D::digest(&h_point_bytes))?;
+        let k_scalar = self.scalar_from_bytes(&self.generate_nonce(secret_key, &h_point_bytes))?;
 
         // Step 6: c = ECVRF_challenge_generation (Y, H, Gamma, U, V)
         // U = k*B = k&Generator
