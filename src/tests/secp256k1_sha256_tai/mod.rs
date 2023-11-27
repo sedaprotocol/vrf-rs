@@ -3,6 +3,8 @@ use elliptic_curve::sec1::ToEncodedPoint;
 use super::*;
 use crate::Secp256k1Sha256;
 
+mod test_vectors;
+
 /// Test VRF decode proof for `SECP256K1-SHA256-TAI` cipher suite
 #[test]
 fn decode_proof() {
