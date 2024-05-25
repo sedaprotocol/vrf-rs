@@ -130,8 +130,9 @@ where
     ///
     /// # Arguments
     ///
-    /// * `y`   - A slice representing the public key in octets.
-    /// * `pi`  - A slice of octets representing the VRF proof.
+    /// * `y`     - A slice representing the public key in octets.
+    /// * `pi`    - A slice of octets representing the VRF proof.
+    /// * `alpha` - A slice containing the input data, to be hashed.
     ///
     /// # Returns
     ///
