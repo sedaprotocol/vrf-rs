@@ -94,7 +94,7 @@ where
         let k_scalar = self.scalar_from_bytes(&self.generate_nonce(secret_key, &h_point_bytes))?;
 
         // Step 6: c = ECVRF_challenge_generation (Y, H, Gamma, U, V)
-        // U = k*B = k&Generator
+        // U = k*B = k*Generator
         let u_point = C::ProjectivePoint::mul_by_generator(&k_scalar);
         let u_point_bytes = u_point.to_encoded_point(true).as_bytes().to_vec();
         // V = k*H
@@ -188,6 +188,23 @@ where
         self.gamma_to_hash(&gamma_point)
     }
 
+    /// Function to compute VRF hash output for a given proof.
+    /// Spec: `ECVRF_proof_to_hash` function (steps 4-to 7).
+    ///
+    /// # Arguments
+    ///
+    /// * `proof`  - A vector of octets representing the proof of the VRF
+    ///
+    /// # Returns
+    ///
+    /// * A vector of octets with the VRF hash output.
+    pub fn proof_to_hash(&self, pi: &[u8]) -> Result<GenericArray<u8, C::FieldBytesSize>> {
+        let gamma_point_bytes = self.decode_proof(pi)?.0;
+        let gamma_point = C::ProjectivePoint::from(self.point_from_bytes(&gamma_point_bytes)?);
+
+        self.gamma_to_hash(&gamma_point)
+    }
+
     /// Function to compute VRF hash output for a given gamma point (part of the VRF proof).
     /// Spec: `ECVRF_proof_to_hash` function (steps 4-to 7).
     ///
@@ -198,7 +215,7 @@ where
     /// # Returns
     ///
     /// * A vector of octets with the VRF hash output.
-    pub fn gamma_to_hash(&self, gamma: &C::ProjectivePoint) -> Result<GenericArray<u8, C::FieldBytesSize>> {
+    pub(crate) fn gamma_to_hash(&self, gamma: &C::ProjectivePoint) -> Result<GenericArray<u8, C::FieldBytesSize>> {
         // Step 4: proof_to_hash_domain_separator_front = 0x03
         const PROOF_TO_HASH_DOMAIN_SEPARATOR_FRONT: u8 = 0x03;
 

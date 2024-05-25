@@ -65,4 +65,5 @@ fn verify() {
 
     let expected_beta = hex!("d466c22e14dc3b7fd169668dd3ee9ac6351429a24aebc5e8af61a0f0de89b65a");
     assert_eq!(beta.as_slice(), expected_beta);
+    assert_eq!(vrf.proof_to_hash(&pi).unwrap(), expected_beta.into());
 }
