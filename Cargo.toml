@@ -7,6 +7,7 @@ homepage = "https://github.com/sedaprotocol/vrf-rs"
 description = "Fast and extensible Elliptic Curve Verifiable Random Function (VRF) library; currently supporting secp256k1 and secp256r1 curves"
 keywords = ["vrf", "ecvrf", "secp256k1", "p256"]
 categories = ["algorithms", "cryptography"]
+license = "MIT"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
